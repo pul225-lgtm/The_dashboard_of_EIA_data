@@ -1,5 +1,5 @@
 # please install it once
-install.packages(c("shiny", "ggplot2", "dplyr", "jsonlite", "lubridate", "extrafont"))
+#install.packages(c("shiny", "ggplot2", "dplyr", "jsonlite", "lubridate", "extrafont"))
 
 library(shiny)
 library(ggplot2)
@@ -16,11 +16,12 @@ loadfonts(device = "win")
 api_key <- "qUb6rdFvajthr9FtxQOOHUHE7VFwSZg7QbeD65ez"
 
 # set the regions and fuel types we want to consider
+# the fuel type of CAL is different from other regions
 regions <- c("CAL", "CAR", "CENT", "TEX", "FLA", "MIDA", "MIDW", "NE", "NY", "NW", "SE", "SW", "TEN")
-fuels <- c("SUN", "WND", "OTH", "OIL", "COL", "NG", "WAT", "NUC")
+fuels <- c("SUN", "WND", "OTH", "OIL", "COL", "NG", "WAT", "NUC", "BAT", "GEO", "PS", "SNB")
 
 # define the fuel order preparing the ggplot graph
-fuel_order <- c("SUN", "WND", "OTH", "OIL", "COL", "NG", "WAT", "NUC")
+fuel_order <- c("SUN", "WND", "OTH", "OIL", "COL", "NG", "WAT", "NUC", "BAT", "GEO", "PS", "SNB")
 
 # define the ui
 ui <- fluidPage(
@@ -47,7 +48,7 @@ ui <- fluidPage(
                   selected = "CAL"),
       
       # filter: choose the fuel type
-      checkboxGroupInput("fuel", "choose the fuel type：",
+      checkboxGroupInput("fuel_check", "choose the fuel type：",
                          choices = unique(fuels),
                          selected = unique(fuels)),
       
@@ -119,8 +120,20 @@ server <- function(input, output) {
       "&length=5000",
       "&api_key=", api_key
     )
-  
-  # deal with the data get from the eia
+    
+    # constructing the demand url
+    url_demand <- paste0(
+      "https://api.eia.gov/v2/electricity/rto/region-data/data/",
+      "?frequency=local-hourly&data[0]=value",
+      "&start=", start_date, "T00", time_offset,
+      "&end=", end_date, "T00", time_offset,
+      "&facets[respondent][]=", input$region,
+      "&sort[0][column]=period&sort[0][direction]=desc&offset=0",
+      "&length=5000",
+      "&api_key=", api_key
+    )
+    
+  # deal with the fuel type generation data get from the eia
   tryCatch({
     response <- fromJSON(url)
     
@@ -129,27 +142,48 @@ server <- function(input, output) {
       return(NULL)
     }
     
+    demand_response <- fromJSON(url_demand)
+    
+    if(is.null(demand_response$response$data)){
+      showNotification("There is no data", type = "warning")
+      return(NULL)
+    }
+    
     data <- tibble(response$response$data)%>%
       filter(respondent == input$region) %>%
-      filter(fueltype %in% input$fuel) %>%
+      filter(fueltype %in% input$fuel_check) %>%
       mutate(generation = value) %>%
       mutate(generation = as.numeric(generation)) %>%
       mutate(date = substring(period, 1, 10)) %>%
       mutate(day_time = substring(period, 12, 13)) %>%
       mutate(fueltype = factor(fueltype, levels = fuel_order)) %>%
+      group_by(fueltype) %>%
+      distinct(date, day_time, .keep_all = TRUE) %>%
+      ungroup() %>%
       filter(date != end_date)
     
-    return(data)
+    demand_data <- tibble(demand_response$response$data) %>%
+      filter(respondent == input$region) %>%
+      filter(type == "D") %>%
+      mutate(demand = as.numeric(value)) %>%
+      mutate(date = substring(period, 1, 10)) %>%
+      mutate(day_time = substring(period, 12, 13)) %>%
+      filter(date != end_date)
+
   }, error = function(e){
     showNotification(paste("Error:", e$message), type = "error")
     return(NULL)
   })
+    
+    list(generation_data = data,
+         demand_data = demand_data)
+    
 })
   
   # count the day used by calculating the width
   day_count <- reactive({
     req(data_result())
-    length(unique(data_result()$date))
+    length(unique(data_result()$generation_data$date))
   })
   
   # set up the width of the graph of single day
@@ -163,28 +197,34 @@ server <- function(input, output) {
   graph_generation <- reactive({
     req(data_result())
     
-    color_mapping <- c("SUN" = "#f9d71c",
-                       "WND" = "#008000",
-                       "OTH" = "#9b59b6",
-                       "OIL" = "#34495E",
-                       "COL" = "#CCCCCC",
-                       "NG" = "#FFC026",
-                       "WAT" = "#0000CC",
-                       "NUC" = "#CC0000")
+    generation_data <- data_result()$generation_data
+    demand_data <- data_result()$demand_data
+    req(generation_data, message = "empty data")
+    req(demand_data, message = "empty data")
     
-    ggplot(data_result(), aes(x = day_time, y = generation, fill = fueltype)) +
-      geom_col(position = "stack") +
+    color_mapping <- c("SUN" = "#f9d71c", "WND" = "#008000",
+                       "OTH" = "#595959", "OIL" = "#34495E",
+                       "COL" = "#CCCCCC", "NG" = "#FFC026",
+                       "WAT" = "#0000CC", "NUC" = "#CC0000",
+                       "BAT" = "#ADD8E6", "GEO" = "#9b59b6",
+                       "PS" = "#90EE90", "SNB" = "#8B4513")
+    
+    ggplot() +
+      geom_col(data = generation_data, aes(x = day_time, y = generation, fill = fueltype), position = "stack") +
+      geom_smooth(data = demand_data, aes(x = day_time, y = demand, group = date),
+                  method = "gam", se = FALSE, color = "lightblue", size = 2) +
       facet_wrap(~date, nrow = 1) +
       scale_fill_manual(values = color_mapping) +
       labs(x = "Hour", y = "Generation(MWh)", fill = "Fuel Type") +
       theme_minimal() +
-      theme(panel.spacing.x = unit(0, "cm"),
+      theme(panel.spacing.x = unit(0, "mm"),
             text = element_text(family = "Times New Roman", size = 12),
             axis.text.x = element_text(vjust = 1, face = "bold", size = 8),
             axis.text.y = element_text(face = "bold"),
-            axis.title.x = element_text(size = 20),
-            axis.title.y = element_text(size = 20),
+            axis.title.x = element_text(size = 20, margin = margin(t = 10)),
+            axis.title.y = element_text(size = 20, margin = margin(r = 5)),
             strip.text.x = element_text(size = 11, face = "bold"))
+    
   })
   
   # generate the stacked bar chart
@@ -212,7 +252,7 @@ server <- function(input, output) {
     },
     
     content = function(file){
-      write.csv(data_result(), file)
+      write.csv(data_result()$generation_data, file)
     })
   
   # catch the status information
