@@ -71,7 +71,13 @@ ui <- fluidPage(
       # add the downloading pdf button
       downloadButton("download_pdf", "Export PDF"),
       # add the downloading data button
-      downloadButton("download_data", "Export data")
+      downloadButton("download_data", "Generation Data"),
+      # add the downloading demand data button
+      downloadButton("download_demand_data", "Demand Data"),
+      # add the downloading interchange data button
+      downloadButton("download_interchange_data", "Interchange Data"),
+      # add the downloading summary_table button
+      downloadButton("download_summary_table", "Summary Table")
     )
   )
 )
@@ -153,11 +159,10 @@ server <- function(input, output) {
       return(NULL)
     }
     
-    data <- tibble(response$response$data)%>%
+    generation_data <- tibble(response$response$data)%>%
       filter(respondent == input$region) %>%
       filter(fueltype %in% input$fuel_check) %>%
-      mutate(generation = value) %>%
-      mutate(generation = as.numeric(generation)) %>%
+      mutate(generation = as.numeric(value)) %>%
       mutate(date = substring(period, 1, 10)) %>%
       mutate(day_time = substring(period, 12, 13)) %>%
       mutate(fueltype = factor(fueltype, levels = fuel_order)) %>%
@@ -187,7 +192,7 @@ server <- function(input, output) {
     return(NULL)
   })
     
-    list(generation_data = data,
+    list(generation_data = generation_data,
          demand_data = demand_data,
          interchange_data = interchange_data)
     
@@ -244,6 +249,45 @@ server <- function(input, output) {
     
   })
   
+  # generate the summary table
+  summary_table <- reactive({
+    
+    req(data_result())
+    
+    generation_data <- data_result()$generation_data
+    demand_data <- data_result()$demand_data
+    interchange_data <- data_result()$interchange_data
+    
+    generation_data <- generation_data %>%
+      mutate(value = as.numeric(value)) %>%
+      mutate(period = substring(period, 1, 13)) %>%
+      mutate(period = gsub("[-T]", ".", period)) %>%
+      pivot_wider(id_cols = c(respondent, period),
+                  names_from = fueltype,
+                  values_from = value) %>%
+      mutate(total_supply = rowSums(across(where(is.numeric))))
+    
+    demand_data <- demand_data %>%
+      mutate(total_demand = as.numeric(value)) %>%
+      select(c("period", "total_demand")) %>%
+      mutate(period = substring(period, 1, 13)) %>%
+      mutate(period = gsub("[-T]", ".", period))
+    
+    interchange_data <- interchange_data %>%
+      mutate(value = as.numeric(value)) %>%
+      group_by(period) %>%
+      summarise(interchange = sum(value)) %>%
+      mutate(period = substring(period, 1, 13)) %>%
+      mutate(period = gsub("[-T]", ".", period))
+      
+    summary_table <- generation_data %>%
+      inner_join(demand_data, by = "period") %>%
+      inner_join(interchange_data, by = "period") %>%
+      mutate(error = total_supply - interchange - total_demand) %>%
+      rename(area = respondent, time = period)
+    
+  })
+  
   # generate the stacked bar chart
   output$stacked_plot <- renderPlot({
     graph_generation()
@@ -253,7 +297,7 @@ server <- function(input, output) {
   output$download_pdf <- downloadHandler(
     filename = function(){
       time <- format(Sys.time(), "%Y-%m-%d_%H-%M-%S")
-      paste0("result_plot-", time, ".pdf")
+      paste0("graph-", time, ".pdf")
     },
     
     content = function(file){
@@ -265,11 +309,44 @@ server <- function(input, output) {
   output$download_data <- downloadHandler(
     filename = function(){
       time <- format(Sys.time(), "%Y-%m-%d_%H-%M-%S")
-      paste0("result_plot-", time, ".csv")
+      paste0("generation_data-", time, ".csv")
     },
     
     content = function(file){
       write.csv(data_result()$generation_data, file)
+    })
+  
+  # To download the demand data
+  output$download_demand_data <- downloadHandler(
+    filename = function(){
+      time <- format(Sys.time(), "%Y-%m-%d_%H-%M-%S")
+      paste0("demand_data-", time, ".csv")
+    },
+    
+    content = function(file){
+      write.csv(data_result()$demand_data, file)
+    })
+  
+  # To download the interchange data
+  output$download_interchange_data <- downloadHandler(
+    filename = function(){
+      time <- format(Sys.time(), "%Y-%m-%d_%H-%M-%S")
+      paste0("interchange_data-", time, ".csv")
+    },
+    
+    content = function(file){
+      write.csv(data_result()$interchange_data, file)
+    })
+  
+  # To download the summary table
+  output$download_summary_table <- downloadHandler(
+    filename = function(){
+      time <- format(Sys.time(), "%Y-%m-%d_%H-%M-%S")
+      paste0("summary_table-", time, ".csv")
+    },
+    
+    content = function(file){
+      write.csv(summary_table(), file)
     })
   
   # catch the status information
