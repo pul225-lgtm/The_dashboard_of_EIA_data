@@ -23,17 +23,17 @@ fuels <- c("SUN", "WND", "OTH", "OIL", "COL", "NG", "WAT", "NUC", "BAT", "GEO", 
 # define the fuel order preparing the ggplot graph
 fuel_order <- c("SUN", "WND", "OTH", "OIL", "COL", "NG", "WAT", "NUC", "BAT", "GEO", "PS", "SNB")
 
-# define the ui
+# define the ui of the dashboard
 ui <- fluidPage(
-  titlePanel("The dashboard of hourly electricity generation data"),
+  titlePanel("The dashboard of hourly electricity data"),
   
   sidebarLayout(
     sidebarPanel(
-      # calendar picker
+      # make the calendar
       dateRangeInput(
         inputId = "date_range",
         label = "choose the date range:",
-        start = Sys.Date() - 7, # the last 7 days(one week) will be displayed by default
+        start = Sys.Date() - 7, # 7 days will be displayed by default
         end = Sys.Date() - 1, # the end day is yesterday by default
         min = "2015-07-01", # the earliest date
         max = Sys.Date() - 1, # the lastest date, we set it yesterday by default
@@ -81,7 +81,11 @@ server <- function(input, output) {
   # transform the date formation get from input
   data_result <- eventReactive(input$confirm, {
     req(input$date_range)
+    
     start_date <- input$date_range[1]
+    start_date_sample <- as.Date(start_date) - days(1)
+    start_date_filter <- format(start_date_sample, "%Y-%m-%d")
+    
     end_date_sample <- as.Date(input$date_range[2]) + days(1)
     end_date <- format(end_date_sample, "%Y-%m-%d")
     
@@ -133,7 +137,7 @@ server <- function(input, output) {
       "&api_key=", api_key
     )
     
-  # deal with the fuel type generation data get from the eia
+  # deal with the fuel type generation, demand, interchange data get from the eia
   tryCatch({
     response <- fromJSON(url)
     
@@ -160,7 +164,7 @@ server <- function(input, output) {
       group_by(fueltype) %>%
       distinct(date, day_time, .keep_all = TRUE) %>%
       ungroup() %>%
-      filter(date != end_date)
+      filter(date != end_date, date != start_date_filter)
     
     demand_data <- tibble(demand_response$response$data) %>%
       filter(respondent == input$region) %>%
@@ -168,15 +172,24 @@ server <- function(input, output) {
       mutate(demand = as.numeric(value)) %>%
       mutate(date = substring(period, 1, 10)) %>%
       mutate(day_time = substring(period, 12, 13)) %>%
-      filter(date != end_date)
-
+      filter(date != end_date, date != start_date_filter)
+    
+    interchange_data <- tibble(demand_response$response$data) %>%
+      filter(respondent == input$region) %>%
+      filter(type == "TI") %>%
+      mutate(interchange = as.numeric(value)) %>%
+      mutate(date = substring(period, 1, 10)) %>%
+      mutate(day_time = substring(period, 12, 13)) %>%
+      filter(date != end_date, date != start_date_filter)
+    
   }, error = function(e){
     showNotification(paste("Error:", e$message), type = "error")
     return(NULL)
   })
     
     list(generation_data = data,
-         demand_data = demand_data)
+         demand_data = demand_data,
+         interchange_data = interchange_data)
     
 })
   
@@ -199,8 +212,10 @@ server <- function(input, output) {
     
     generation_data <- data_result()$generation_data
     demand_data <- data_result()$demand_data
+    interchange_data <- data_result()$interchange_data
     req(generation_data, message = "empty data")
     req(demand_data, message = "empty data")
+    req(interchange_data, message = "empty data")
     
     color_mapping <- c("SUN" = "#f9d71c", "WND" = "#008000",
                        "OTH" = "#595959", "OIL" = "#34495E",
@@ -212,6 +227,8 @@ server <- function(input, output) {
     ggplot() +
       geom_col(data = generation_data, aes(x = day_time, y = generation, fill = fueltype), position = "stack") +
       geom_smooth(data = demand_data, aes(x = day_time, y = demand, group = date),
+                  method = "gam", se = FALSE, color = "lightblue", size = 2) +
+      geom_smooth(data = interchange_data, aes(x = day_time, y = interchange, group = date),
                   method = "gam", se = FALSE, color = "lightblue", size = 2) +
       facet_wrap(~date, nrow = 1) +
       scale_fill_manual(values = color_mapping) +
