@@ -4,6 +4,7 @@
 library(shiny)
 library(ggplot2)
 library(dplyr)
+library(tidyr)
 library(jsonlite)
 library(lubridate)
 library(extrafont)
@@ -232,9 +233,9 @@ server <- function(input, output) {
     ggplot() +
       geom_col(data = generation_data, aes(x = day_time, y = generation, fill = fueltype), position = "stack") +
       geom_smooth(data = demand_data, aes(x = day_time, y = demand, group = date),
-                  method = "gam", se = FALSE, color = "lightblue", size = 2) +
+                  method = "gam", se = FALSE, color = "lightblue", linewidth = 2) +
       geom_smooth(data = interchange_data, aes(x = day_time, y = interchange, group = date),
-                  method = "gam", se = FALSE, color = "lightblue", size = 2) +
+                  method = "gam", se = FALSE, color = "lightblue", linewidth = 2) +
       facet_wrap(~date, nrow = 1) +
       scale_fill_manual(values = color_mapping) +
       labs(x = "Hour", y = "Generation(MWh)", fill = "Fuel Type") +
